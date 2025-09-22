@@ -2,7 +2,12 @@
 require_once 'partials/header.php';
 require_once '../includes/config.php';
 require_once '../includes/import_logic.php';
-require_once '../includes/content_manager.php'; // Include the content manager
+require_once '../includes/content_manager.php';
+require_once '../includes/JsonStreamingParser/Parser.php';
+require_once '../includes/JsonStreamingParser/ParserHelper.php';
+require_once '../includes/JsonStreamingParser/Listener/ListenerInterface.php';
+require_once '../includes/JsonStreamingParser/Exception/ParsingException.php';
+require_once '../includes/ImportListener.php';
 
 $conn = db_connect();
 $feedback = '';
@@ -31,16 +36,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['json_file'])) {
         $feedback = 'Error uploading file. Code: ' . $file['error'];
         $feedback_type = 'error';
     } else {
-        $json_content = file_get_contents($file['tmp_name']);
-        $data = json_decode($json_content, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            $feedback = 'Error parsing JSON: ' . json_last_error_msg();
+        try {
+            $stream = fopen($file['tmp_name'], 'r');
+            $listener = new ImportListener($conn);
+            $parser = new \JsonStreamingParser\Parser($stream, $listener);
+            $parser->parse();
+            fclose($stream);
+            $feedback = 'Import process completed.';
+            $feedback_type = 'success';
+        } catch (Exception $e) {
+            $feedback = 'Error parsing JSON: ' . $e->getMessage();
             $feedback_type = 'error';
-        } else {
-            $import_result = importJsonData($data, $conn);
-            $feedback = $import_result['message'];
-            $feedback_type = $import_result['status'];
         }
     }
 }
