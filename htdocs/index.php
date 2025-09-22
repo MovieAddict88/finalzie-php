@@ -5,119 +5,34 @@ $conn = db_connect();
 $all_content = null;
 
 if ($conn) {
-    // This is a simplified version of the logic from api/content.php
-    // In a real application, you would abstract this into a shared function.
-    $cineData = ['Categories' => []];
-    $movies_category = ['MainCategory' => 'Movies', 'SubCategories' => [], 'Entries' => []];
-    $livetv_category = ['MainCategory' => 'Live TV', 'SubCategories' => [], 'Entries' => []];
-    $series_category = ['MainCategory' => 'TV Series', 'SubCategories' => [], 'Entries' => []];
+    // Fetch lightweight data for initial page load (Carousel & Filters)
+    $all_content = ['Categories' => [], 'filterOptions' => ['years' => []]];
 
-    // Fetch all servers first and map them by content ID for efficiency
-    $all_servers = [];
-    $sql_servers = "SELECT * FROM servers";
-    $result_servers = $conn->query($sql_servers);
-    while($row = $result_servers->fetch_assoc()) {
-        $key = $row['content_type'] . '_' . $row['content_id'];
-        if (!isset($all_servers[$key])) {
-            $all_servers[$key] = [];
-        }
-        $all_servers[$key][] = ['name' => $row['server_name'], 'url' => $row['server_url']];
+    // 1. Fetch a few random items for the carousel
+    $movies_category = ['MainCategory' => 'Movies', 'Entries' => []];
+    $sql_movies = "SELECT id, title, description, poster_path, 'movie' as type, release_date, rating, parental_rating, runtime FROM movies WHERE poster_path IS NOT NULL AND poster_path != '' ORDER BY RAND() LIMIT 3";
+    $result = $conn->query($sql_movies);
+    if ($result) {
+        while($row = $result->fetch_assoc()) { $movies_category['Entries'][] = $row; }
     }
 
-    // Fetch Movies
-    $sql_movies = "SELECT * FROM movies ORDER BY release_date DESC";
-    $result_movies = $conn->query($sql_movies);
-    while ($movie = $result_movies->fetch_assoc()) {
-        $servers_key = 'movie_' . $movie['id'];
-        $entry = [
-            'id' => $movie['id'],
-            'type' => 'movie',
-            'Title' => $movie['title'],
-            'Description' => $movie['description'],
-            'Poster' => $movie['poster_path'],
-            'Thumbnail' => $movie['poster_path'],
-            'Rating' => (float)$movie['rating'],
-            'Duration' => $movie['runtime'] > 0 ? gmdate("H:i:s", $movie['runtime'] * 60) : 'N/A',
-            'Year' => !empty($movie['release_date']) ? (int)date('Y', strtotime($movie['release_date'])) : null,
-            'parentalRating' => $movie['parental_rating'],
-            'Servers' => isset($all_servers[$servers_key]) ? $all_servers[$servers_key] : []
-        ];
-        $movies_category['Entries'][] = $entry;
+    $series_category = ['MainCategory' => 'TV Series', 'Entries' => []];
+    $sql_series = "SELECT id, title, description, poster_path, 'series' as type, first_air_date as release_date, rating, parental_rating FROM tv_series WHERE poster_path IS NOT NULL AND poster_path != '' ORDER BY RAND() LIMIT 2";
+    $result = $conn->query($sql_series);
+    if ($result) {
+        while($row = $result->fetch_assoc()) { $series_category['Entries'][] = $row; }
     }
 
-    // Fetch Live TV
-    $sql_livetv = "SELECT * FROM live_tv ORDER BY created_at DESC";
-    $result_livetv = $conn->query($sql_livetv);
-    while ($livetv = $result_livetv->fetch_assoc()) {
-        $servers_key = 'live_' . $livetv['id'];
-        $entry = [
-            'id' => $livetv['id'],
-            'type' => 'live',
-            'Title' => $livetv['title'],
-            'Description' => $livetv['description'],
-            'Poster' => $livetv['poster_path'],
-            'Thumbnail' => $livetv['poster_path'],
-            'Rating' => 0, // Live TV might not have ratings
-            'Duration' => 'N/A',
-            'Year' => (int)date('Y', strtotime($livetv['created_at'])),
-            'parentalRating' => null, // Or fetch if available
-            'Servers' => isset($all_servers[$servers_key]) ? $all_servers[$servers_key] : []
-        ];
-        $livetv_category['Entries'][] = $entry;
+    $all_content['Categories'] = array_filter([$movies_category, $series_category], fn($c) => !empty($c['Entries']));
+
+    // 2. Fetch distinct options for filters
+    $years_query = "SELECT DISTINCT T.yr AS Year FROM ((SELECT YEAR(release_date) AS yr FROM movies) UNION (SELECT YEAR(first_air_date) AS yr FROM tv_series)) AS T WHERE T.yr IS NOT NULL ORDER BY T.yr DESC";
+
+    $result_years = $conn->query($years_query);
+    if ($result_years) {
+        while($row = $result_years->fetch_assoc()) $all_content['filterOptions']['years'][] = $row['Year'];
     }
 
-    // Fetch TV Series
-    $sql_series = "SELECT * FROM tv_series ORDER BY first_air_date DESC";
-    $result_series = $conn->query($sql_series);
-    while ($series = $result_series->fetch_assoc()) {
-        $series_entry = [
-            'id' => $series['id'],
-            'type' => 'series',
-            'Title' => $series['title'],
-            'Description' => $series['description'],
-            'Poster' => $series['poster_path'],
-            'Thumbnail' => $series['poster_path'],
-            'Rating' => (float)$series['rating'],
-            'Year' => (int)date('Y', strtotime($series['first_air_date'])),
-            'parentalRating' => $series['parental_rating'],
-            'Seasons' => []
-        ];
-
-        $sql_seasons = "SELECT * FROM seasons WHERE series_id = {$series['id']} ORDER BY season_number ASC";
-        $result_seasons = $conn->query($sql_seasons);
-        while($season = $result_seasons->fetch_assoc()) {
-            $season_entry = [
-                'Season' => (int)$season['season_number'],
-                'SeasonPoster' => $season['poster_path'] ?: $series['poster_path'],
-                'Episodes' => []
-            ];
-
-            $sql_episodes = "SELECT * FROM episodes WHERE season_id = {$season['id']} ORDER BY episode_number ASC";
-            $result_episodes = $conn->query($sql_episodes);
-            while($episode = $result_episodes->fetch_assoc()) {
-                $servers_key = 'episode_' . $episode['id'];
-                $episode_entry = [
-                    'id' => $episode['id'],
-                    'type' => 'episode',
-                    'Episode' => (int)$episode['episode_number'],
-                    'Title' => $episode['title'],
-                    'Duration' => $episode['runtime'] > 0 ? gmdate("H:i:s", $episode['runtime'] * 60) : 'N/A',
-                    'Description' => $episode['description'],
-                    'Thumbnail' => $episode['still_path'],
-                    'Servers' => isset($all_servers[$servers_key]) ? $all_servers[$servers_key] : []
-                ];
-                $season_entry['Episodes'][] = $episode_entry;
-            }
-            $series_entry['Seasons'][] = $season_entry;
-        }
-        $series_category['Entries'][] = $series_entry;
-    }
-
-    if (!empty($livetv_category['Entries'])) $cineData['Categories'][] = $livetv_category;
-    if (!empty($movies_category['Entries'])) $cineData['Categories'][] = $movies_category;
-    if (!empty($series_category['Entries'])) $cineData['Categories'][] = $series_category;
-
-    $all_content = $cineData;
     $conn->close();
 }
 ?>
@@ -2966,12 +2881,6 @@ if ($conn) {
                     </select>
                 </div>
 
-                <div class="filter-group">
-                    <label for="country-filter">Country</label>
-                    <select id="country-filter" class="filter-select">
-                        <option value="all">All Countries</option>
-                    </select>
-                </div>
 
                 <div class="filter-group">
                     <label for="sort-filter">Sort By</label>
@@ -3477,18 +3386,16 @@ if ($conn) {
             }
         };
 
-        const ITEMS_PER_PAGE = 20;
-        const LAZY_LOAD_THRESHOLD = 100; // px from bottom to trigger load
+        const ITEMS_PER_PAGE = 50;
+        const LAZY_LOAD_THRESHOLD = 200; // px from bottom to trigger load
         const PLACEHOLDER_IMAGE_URL = 'https://movie-fcs.fwh.is/cinecraze/cinecraze.png';
-        // TMDB API removed - using local data only
         
-        // SAMPLE DATA - Replace this with your actual data source
-        let cineData = preloadedData || null; // Use pre-loaded data
+        let cineData = preloadedData || null; // Use pre-loaded data for Carousel & Filters
         let cachedContent = [];
         let currentPage = 1;
         let totalPages = 0;
         let isFetching = false;
-        let isInitialLoad = true; // Flag for initial content shuffle
+        let isInitialLoad = true;
         
         // DOM Elements
         const elements = {
@@ -3502,16 +3409,11 @@ if ($conn) {
             contentList: document.getElementById('content-list'),
             watchLaterGrid: document.getElementById('watch-later-grid'),
             genreFilter: document.getElementById('genre-filter'),
-            countryFilter: document.getElementById('country-filter'),
             yearFilter: document.getElementById('year-filter'),
             sortFilter: document.getElementById('sort-filter'),
             viewerPage: document.getElementById('viewer-page'),
             viewerTitle: document.getElementById('viewer-title'),
             viewerDescription: document.getElementById('viewer-description'),
-            // viewerRating: document.getElementById('viewer-rating'), // Not used
-            // viewerDuration: document.getElementById('viewer-duration'), // Not used
-            // viewerYear: document.getElementById('viewer-year'), // Not used
-            // viewerCountry: document.getElementById('viewer-country'), // Not used
             serverSelect: document.getElementById('quality-select'),
             playerServerSelector: document.getElementById('player-server-selector'),
             serverSelectorContainer: document.getElementById('server-selector-container'),
@@ -3539,17 +3441,13 @@ if ($conn) {
             progressBarContainer: document.getElementById('progress-bar-container'),
             progressBar: document.getElementById('progress-bar'),
             progressBarText: document.getElementById('progress-bar-text'),
-            // Containers for moving elements
             relatedVideosContainer: document.querySelector('.related-videos'),
             videoDetailsContainer: document.querySelector('.video-details'),
-            // Episode navigation buttons (to be created)
             prevEpisodeBtn: null,
             nextEpisodeBtn: null,
             hamburgerBtn: document.getElementById('hamburger-btn'),
             mobileFiltersMenu: document.querySelector('.mobile-filters-menu'),
             stretchBtn: document.getElementById('stretch-btn'),
-
-            // Parental Controls
             parentalControlsLink: document.getElementById('parental-controls-link'),
             parentalControlsModal: document.getElementById('parental-controls-modal'),
             closeParentalControlsModal: document.getElementById('close-parental-controls-modal'),
@@ -3560,12 +3458,10 @@ if ($conn) {
             changeRatingsBtn: document.getElementById('change-ratings-btn'),
             allowedRatingsDisplay: document.getElementById('allowed-ratings-display'),
             unratedContentToggle: document.getElementById('unrated-content-toggle'),
-
             ratingsSelectModal: document.getElementById('ratings-select-modal'),
             ratingsCheckboxContainer: document.getElementById('ratings-checkbox-container'),
             cancelRatingsBtn: document.getElementById('cancel-ratings-btn'),
             okRatingsBtn: document.getElementById('ok-ratings-btn'),
-
             pinEntryModal: document.getElementById('pin-entry-modal'),
             closePinEntryModal: document.getElementById('close-pin-entry-modal'),
             pinEntryTitle: document.getElementById('pin-entry-title'),
@@ -3576,9 +3472,8 @@ if ($conn) {
             okPinEntryBtn: document.getElementById('ok-pin-entry-btn')
         };
         
-        // State
         let currentView = 'grid';
-        let currentContentInfo = {}; // To store current viewed content info for save/like
+        let currentContentInfo = {};
         let currentContent = [];
         let currentCarouselIndex = 0;
         let playerInstance = null;
@@ -3589,18 +3484,16 @@ if ($conn) {
         let isStretched = false;
         let watchLaterItemsSet = new Set();
 
-        // Parental Controls State
         let parentalControls = {
             pin: null,
             allowedRatings: [],
             allowUnrated: true
         };
         let currentPinInput = "";
-        let pinEntryCallback = null; // To store what to do after successful PIN entry
+        let pinEntryCallback = null;
         let isSettingPin = false;
         let tempPin = '';
         
-        // Function to shuffle an array
         function shuffleArray(array) {
             for (let i = array.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
@@ -3609,7 +3502,6 @@ if ($conn) {
             return array;
         }
         
-        // Sort content based on criteria
         function sortContent(content, criteria) {
             return [...content].sort((a, b) => {
                 switch(criteria) {
@@ -3625,45 +3517,34 @@ if ($conn) {
             });
         }
         
-        // Function to create episode navigation buttons
         function createEpisodeNavigationButtons() {
             elements.prevEpisodeBtn = document.createElement('button');
             elements.prevEpisodeBtn.type = 'button';
-            elements.prevEpisodeBtn.className = 'plyr__controls__item plyr__control'; // Standard Plyr classes
+            elements.prevEpisodeBtn.className = 'plyr__controls__item plyr__control';
             elements.prevEpisodeBtn.id = 'prev-episode-btn';
             elements.prevEpisodeBtn.setAttribute('aria-label', 'Previous Episode');
             elements.prevEpisodeBtn.innerHTML = '<i class="fas fa-backward"></i>';
-            elements.prevEpisodeBtn.style.display = 'none'; // Initially hidden
+            elements.prevEpisodeBtn.style.display = 'none';
 
             elements.nextEpisodeBtn = document.createElement('button');
             elements.nextEpisodeBtn.type = 'button';
-            elements.nextEpisodeBtn.className = 'plyr__controls__item plyr__control'; // Standard Plyr classes
+            elements.nextEpisodeBtn.className = 'plyr__controls__item plyr__control';
             elements.nextEpisodeBtn.id = 'next-episode-btn';
             elements.nextEpisodeBtn.setAttribute('aria-label', 'Next Episode');
             elements.nextEpisodeBtn.innerHTML = '<i class="fas fa-forward"></i>';
-            elements.nextEpisodeBtn.style.display = 'none'; // Initially hidden
+            elements.nextEpisodeBtn.style.display = 'none';
         }
 
-        // Function to generate star rating HTML
         function generateStarRating(ratingStr) {
             const rating = parseFloat(ratingStr);
-            if (isNaN(rating) || rating < 0 || rating > 10) {
-                return '<span>N/A</span>';
-            }
-
+            if (isNaN(rating) || rating < 0 || rating > 10) return '<span>N/A</span>';
             const numStars = 5;
             let starsHtml = '<span class="star-rating">';
-            // Convert 0-10 scale to 0-5 scale for star calculation
-            const ratingOutOfFive = rating / 2; 
-
+            const ratingOutOfFive = rating / 2;
             for (let i = 0; i < numStars; i++) {
-                if (ratingOutOfFive >= i + 1) {
-                    starsHtml += '<i class="fas fa-star"></i>'; // Full star
-                } else if (ratingOutOfFive >= i + 0.5) {
-                    starsHtml += '<i class="fas fa-star-half-alt"></i>'; // Half star
-                } else {
-                    starsHtml += '<i class="far fa-star"></i>'; // Empty star
-                }
+                if (ratingOutOfFive >= i + 1) starsHtml += '<i class="fas fa-star"></i>';
+                else if (ratingOutOfFive >= i + 0.5) starsHtml += '<i class="fas fa-star-half-alt"></i>';
+                else starsHtml += '<i class="far fa-star"></i>';
             }
             starsHtml += '</span>';
             return starsHtml;
@@ -3671,35 +3552,19 @@ if ($conn) {
 
         const countryNameToCodeMap = {
             "USA": "us", "United States": "us", "United States of America": "us",
-            "UK": "gb", "United Kingdom": "gb",
-            "Canada": "ca",
-            "Japan": "jp",
-            "South Korea": "kr", "Korea": "kr",
-            "France": "fr",
-            "Germany": "de",
-            "India": "in",
-            "China": "cn",
-            "Spain": "es",
-            "Italy": "it",
-            "Australia": "au",
-            "Brazil": "br",
-            "Mexico": "mx",
-            "Philippines": "ph",
-            // Add more common mappings as needed
+            "UK": "gb", "United Kingdom": "gb", "Canada": "ca", "Japan": "jp", "South Korea": "kr", "Korea": "kr",
+            "France": "fr", "Germany": "de", "India": "in", "China": "cn", "Spain": "es", "Italy": "it",
+            "Australia": "au", "Brazil": "br", "Mexico": "mx", "Philippines": "ph",
         };
 
         function getCountryFlagHtml(countryName) {
             if (!countryName) return '';
-            const countryCode = countryNameToCodeMap[countryName.trim()] || countryName.toLowerCase().replace(/\s+/g, '-'); // Fallback for unmapped
-            if (countryCode) {
-                return `<span class="fi fi-${countryCode.toLowerCase()}"></span>`;
-            }
-            return ''; // Return empty if no code found, or could return countryName text
+            const countryCode = countryNameToCodeMap[countryName.trim()] || countryName.toLowerCase().replace(/\s+/g, '-');
+            if (countryCode) return `<span class="fi fi-${countryCode.toLowerCase()}"></span>`;
+            return '';
         }
 
-        // Initialize the app
         async function init() {
-            // Cache watch later items
             try {
                 const db = await watchLaterDbUtil.open();
                 const watchLaterItems = await watchLaterDbUtil.getAll(db);
@@ -3709,146 +3574,94 @@ if ($conn) {
                 console.error("Failed to cache watch later items:", error);
             }
 
-            setupParentalControls(); // Setup parental controls first
-            createEpisodeNavigationButtons(); // Create buttons before they might be needed
-            fetchData().then(() => {
-                renderCarousel();
-                renderContentFilters();
-                renderContent();
-                setupEventListeners();
-                setupMobileBackButton(); // Setup mobile back button support
-                updateCarousel();
-                setupLazyLoading();
-                history.replaceState({ page: 'browse' }, 'Browse Content', window.location.pathname + window.location.search);
-            });
+            setupParentalControls();
+            createEpisodeNavigationButtons();
+
+            renderCarousel();
+            renderContentFilters();
+            updateCarousel();
+
+            await renderContent();
+
+            setupEventListeners();
+            setupMobileBackButton();
+            setupLazyLoading();
+            history.replaceState({ page: 'browse' }, 'Browse Content', window.location.pathname + window.location.search);
         }
-        
-        // Helpers for segmented playlist fetching
-        const MAX_PLAYLIST_SEGMENTS = 50; // safety cap
-        function getBasePathFromUrl(url) {
-            if (!url) return '';
-            const lastSlashIndex = url.lastIndexOf('/');
-            return lastSlashIndex >= 0 ? url.substring(0, lastSlashIndex + 1) : url;
-        }
-        function replaceFileName(url, fileName) {
-            return getBasePathFromUrl(url) + fileName;
-        }
-        function withCacheBuster(url) {
-            const separator = url.includes('?') ? '&' : '?';
-            return url + separator + 't=' + new Date().getTime();
-        }
-        async function tryFetchJson(url) {
+
+        async function fetchData({ page = 1, append = false } = {}) {
+            const activeNavItem = document.querySelector('.nav-item.active');
+            const category = activeNavItem ? activeNavItem.dataset.category : 'all';
+
+            if (category === 'watch-later' || isFetching) return;
+
+            isFetching = true;
+            elements.loadingSpinner.style.display = 'block';
+
+            const sort = elements.sortFilter.value;
+            const genre = elements.genreFilter.value;
+            const year = elements.yearFilter.value;
+
+            const params = new URLSearchParams({ page, limit: ITEMS_PER_PAGE, sort, type: category, genre, year });
+            const url = `api/content.php?${params.toString()}`;
+
             try {
-                const response = await fetch(withCacheBuster(url));
-                if (!response.ok) return null;
-                return await response.json();
-            } catch (err) {
-                console.warn('tryFetchJson failed for', url, err);
-                return null;
-            }
-        }
-        function mergeCineDataSegments(segments) {
-            if (!Array.isArray(segments) || segments.length === 0) return null;
-            const categoryNameToCategory = new Map();
-            const categoryNameToSeenTitles = new Map();
-            for (const segment of segments) {
-                if (!segment || !Array.isArray(segment.Categories)) continue;
-                for (const category of segment.Categories) {
-                    if (!category || !category.MainCategory || !Array.isArray(category.Entries)) continue;
-                    const key = String(category.MainCategory);
-                    if (!categoryNameToCategory.has(key)) {
-                        categoryNameToCategory.set(key, { MainCategory: category.MainCategory, Entries: [] });
-                        categoryNameToSeenTitles.set(key, new Set());
-                    }
-                    const targetCategory = categoryNameToCategory.get(key);
-                    const seen = categoryNameToSeenTitles.get(key);
-                    for (const entry of category.Entries) {
-                        const title = entry && entry.Title ? String(entry.Title) : null;
-                        if (!title) continue;
-                        if (seen.has(title)) continue;
-                        seen.add(title);
-                        targetCategory.Entries.push(entry);
-                    }
-                }
-            }
-            return { Categories: Array.from(categoryNameToCategory.values()) };
-        }
-        async function tryFetchSegmented(basePlaylistUrl) {
-            const segments = [];
-            let foundAny = false;
-            for (let i = 1; i <= MAX_PLAYLIST_SEGMENTS; i++) {
-                const progress = Math.round((i / MAX_PLAYLIST_SEGMENTS) * 100);
-                elements.progressBar.style.width = `${progress}%`;
-                elements.progressBarText.textContent = `Fetching segment ${i} of ${MAX_PLAYLIST_SEGMENTS}...`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
 
-                const numberedUrl = replaceFileName(basePlaylistUrl, `playlist${i}.json`);
-                let data = await tryFetchJson(numberedUrl);
-                if (!data) {
-                    const dashedUrl = replaceFileName(basePlaylistUrl, `playlist-${i}.json`);
-                    data = await tryFetchJson(dashedUrl);
+                const newContent = [];
+                if (data.categories) {
+                    data.categories.forEach(cat => {
+                        cat.Entries.forEach(entry => {
+                            newContent.push({
+                                ...entry,
+                                type: entry.type
+                            });
+                        });
+                    });
                 }
-                if (!data) {
-                    if (foundAny) {
-                        elements.progressBar.style.width = `100%`;
-                        elements.progressBarText.textContent = `Found ${segments.length} segments. Merging data...`;
-                    }
-                    break;
-                }
-                foundAny = true;
-                segments.push(data);
-            }
-            if (!foundAny) return null;
-            return mergeCineDataSegments(segments);
-        }
-        
-        // Data is now pre-loaded, so this function is much simpler.
-        // It ensures the rest of the app that depends on this Promise still works.
-        async function fetchData() {
-            return new Promise((resolve, reject) => {
-                if (cineData && cineData.Categories) {
-                    console.log("✅ Data was pre-loaded successfully via PHP.");
-                    // Hide loading indicators that might have been shown by default
-                    elements.progressBarContainer.style.display = 'none';
-                    elements.loadingSpinner.style.display = 'none';
-                    resolve();
+
+                if (append) {
+                    currentContent = [...currentContent, ...newContent];
                 } else {
-                    console.error("❌ Pre-loaded data is not available. Check PHP block.");
-                    const errorMessage = document.createElement('div');
-                    errorMessage.style.cssText = `
-                        position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                        background: var(--youtube-gray); padding: 20px; border-radius: 8px; text-align: center;
-                        z-index: 10000; max-width: 400px;
-                    `;
-                    errorMessage.innerHTML = `
-                        <h3>⚠️ Data Loading Failed</h3>
-                        <p>Could not load initial content from the server. Please ensure the database is set up correctly.</p>
-                        <a href="setup.php" style="
-                            display: inline-block; background: var(--primary); color: white; border: none; padding: 10px 20px;
-                            border-radius: 4px; cursor: pointer; margin-top: 10px; text-decoration: none;
-                        ">Run Setup</a>
-                    `;
-                    document.body.appendChild(errorMessage);
-                    reject("Pre-loaded data not found.");
+                    currentContent = newContent;
+                    elements.contentGrid.innerHTML = '';
+                    elements.contentList.innerHTML = '';
                 }
-            });
+
+                currentPage = data.pagination.page;
+                totalPages = data.pagination.total_pages;
+
+                cachedContent = [...currentContent];
+
+                renderPageContent(newContent);
+                renderPaginationControls();
+                setupLazyLoading();
+
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            } finally {
+                isFetching = false;
+                elements.loadingSpinner.style.display = 'none';
+            }
+        }
+
+        function loadMoreContent() {
+            if (currentPage < totalPages) {
+                fetchData({ page: currentPage + 1, append: true });
+            }
         }
         
-        // TMDB API function removed - using local data only
-
-        // No longer needed, data is pre-enriched
-        // async function fixDataInconsistencies() { ... }
-
-        // Helper function to get random distinct items from an array
         function getRandomItems(arr, count) {
             if (!arr || arr.length === 0) return [];
             const shuffled = [...arr].sort(() => 0.5 - Math.random());
             return shuffled.slice(0, Math.min(count, arr.length));
         }
         
-        // Render carousel
         function renderCarousel() {
-            if (!cineData || !cineData.Categories || cineData.Categories.length < 3) {
-                console.warn("Carousel data is not as expected. Skipping render.");
+            if (!cineData || !cineData.Categories) {
+                console.warn("Carousel preloaded data is not available. Skipping render.");
                 return;
             }
 
@@ -3857,272 +3670,130 @@ if ($conn) {
             const seriesCategory = cineData.Categories.find(cat => cat.MainCategory.toLowerCase().includes('series'));
             const liveCategory = cineData.Categories.find(cat => cat.MainCategory.toLowerCase().includes('live'));
 
-            // Add randomly selected movies
             if (moviesCategory && moviesCategory.Entries) {
-                getRandomItems(moviesCategory.Entries, 3).forEach(movie => {
-                    featuredContent.push({
-                        type: 'movie',
-                        title: movie.Title,
-                        description: movie.Description,
-                        image: movie.Poster,
-                        // Store original item for click handling
-                        originalItem: movie 
-                    });
-                });
+                getRandomItems(moviesCategory.Entries, 3).forEach(movie => featuredContent.push({ ...movie, type: 'movie', originalItem: movie }));
             }
-
-            // Add randomly selected TV series
             if (seriesCategory && seriesCategory.Entries) {
-                getRandomItems(seriesCategory.Entries, 1).forEach(series => {
-                    featuredContent.push({
-                        type: 'series',
-                        title: series.Title,
-                        description: series.Description || `Popular ${series.SubCategory} series`,
-                        image: series.Poster,
-                        originalItem: series 
-                    });
-                });
+                getRandomItems(seriesCategory.Entries, 1).forEach(series => featuredContent.push({ ...series, type: 'series', originalItem: series }));
             }
-
-            // Add randomly selected live TV
             if (liveCategory && liveCategory.Entries) {
-                getRandomItems(liveCategory.Entries, 1).forEach(live => {
-                    featuredContent.push({
-                        type: 'live',
-                        title: live.Title,
-                        description: live.Description,
-                        image: live.Poster,
-                        originalItem: live 
-                    });
-                });
+                getRandomItems(liveCategory.Entries, 1).forEach(live => featuredContent.push({ ...live, type: 'live', originalItem: live }));
             }
 
-            // Shuffle the order of the collected featured content
             shuffleArray(featuredContent);
-
-            // Render carousel items
             elements.carouselInner.innerHTML = '';
             elements.carouselIndicators.innerHTML = '';
 
             featuredContent.forEach((item, index) => {
-                // Carousel item
                 const carouselItem = document.createElement('div');
                 carouselItem.className = 'carousel-item';
-                // Get year from the original item if available
                 const year = item.originalItem && item.originalItem.Year ? item.originalItem.Year : '';
                 const ratingHtml = item.originalItem ? generateStarRating(item.originalItem.Rating) : '';
 
                 carouselItem.innerHTML = `
-                    <img src="${item.image}" alt="${item.title}" onerror="this.onerror=null; this.src='${PLACEHOLDER_IMAGE_URL}';">
+                    <img src="${item.Poster || item.Thumbnail}" alt="${item.Title}" onerror="this.onerror=null; this.src='${PLACEHOLDER_IMAGE_URL}';">
                     <div class="carousel-content">
-                        <h2>${item.title}</h2>
-                        <div class="carousel-meta">
-                            ${ratingHtml}
-                            ${year ? `<span class="carousel-year">${year}</span>` : ''}
-                        </div>
-                        <p>${item.description}</p>
+                        <h2>${item.Title}</h2>
+                        <div class="carousel-meta">${ratingHtml}${year ? `<span class="carousel-year">${year}</span>` : ''}</div>
+                        <p>${item.Description}</p>
                     </div>
                 `;
                 elements.carouselInner.appendChild(carouselItem);
 
-                // Indicator
                 const indicator = document.createElement('div');
                 indicator.className = 'indicator';
                 indicator.dataset.index = index;
                 if (index === 0) indicator.classList.add('active');
                 elements.carouselIndicators.appendChild(indicator);
-
-                // Add click event to indicator
-                indicator.addEventListener('click', () => {
-                    currentCarouselIndex = index;
-                    updateCarousel();
-                });
-
-                // Make carousel item clickable
-                carouselItem.addEventListener('click', () => {
-                    if (item.originalItem) {
-                        // The 'type' is already correctly set in featuredContent items
-                        openViewer({ ...item.originalItem, type: item.type });
-                    } else {
-                        // Fallback or error if originalItem is somehow missing
-                        console.error("Carousel item is missing originalItem data:", item);
-                    }
-                });
+                indicator.addEventListener('click', () => { currentCarouselIndex = index; updateCarousel(); });
+                carouselItem.addEventListener('click', () => openViewer(item.originalItem));
             });
         }
         
-        // Render content filters
         function renderContentFilters() {
             if (!cineData || !cineData.Categories) return;
 
-            // Get unique genres and countries
             const genres = new Set();
             const countries = new Set();
+            const years = new Set();
 
             cineData.Categories.forEach(category => {
                 category.Entries.forEach(entry => {
                     if (entry.SubCategory) genres.add(entry.SubCategory);
                     if (entry.Country) countries.add(entry.Country);
+                    if (entry.Year) years.add(entry.Year);
                 });
             });
 
-            // Populate genre filter
-            const genreFilter = elements.genreFilter;
             genres.forEach(genre => {
                 const option = document.createElement('option');
                 option.value = genre.toLowerCase();
                 option.textContent = genre;
-                genreFilter.appendChild(option);
+                elements.genreFilter.appendChild(option);
             });
-
-            // Populate country filter
-            const countryFilter = elements.countryFilter;
             countries.forEach(country => {
                 const option = document.createElement('option');
                 option.value = country.toLowerCase();
                 option.textContent = country;
-                countryFilter.appendChild(option);
+                elements.countryFilter.appendChild(option);
             });
-
-            // Populate year filter
-            const yearFilter = elements.yearFilter;
-            const years = new Set();
-            cineData.Categories.forEach(category => {
-                category.Entries.forEach(entry => {
-                    if (entry.Year) {
-                        years.add(entry.Year);
-                    }
-                });
-            });
-
-            const sortedYears = Array.from(years).sort((a, b) => b - a);
-            sortedYears.forEach(year => {
+            Array.from(years).sort((a, b) => b - a).forEach(year => {
                 const option = document.createElement('option');
                 option.value = year;
                 option.textContent = year;
-                yearFilter.appendChild(option);
+                elements.yearFilter.appendChild(option);
             });
         }
         
-        // Render content based on filters
         async function renderContent(category = 'all') {
-            if (!cineData || !cineData.Categories) return;
-
             const filtersSection = document.querySelector('.filters-section');
-
-            // Reset pagination
-            currentPage = 1;
-            currentContent = [];
-
             if (category === 'watch-later') {
-                filtersSection.style.display = 'none'; // Hide filters for Watch Later
+                filtersSection.style.display = 'none';
+                elements.contentGrid.innerHTML = '';
+                elements.contentList.innerHTML = '';
                 const db = await watchLaterDbUtil.open();
                 const watchLaterItems = await watchLaterDbUtil.getAll(db);
                 db.close();
                 currentContent = watchLaterItems.map(item => ({ ...item, type: item.type || 'movie' }));
-
-                totalPages = Math.ceil(currentContent.length / ITEMS_PER_PAGE);
                 cachedContent = [...currentContent];
-                currentView = 'watch-later'; // Set the view
-                renderCurrentView();
+                renderPageContent(currentContent);
                 renderPaginationControls();
-                setupLazyLoading();
                 return;
-            } else {
-                const icon = elements.viewToggleBtn.querySelector('i');
-                if (icon.classList.contains('fa-list')) {
-                    currentView = 'list';
-                } else {
-                    currentView = 'grid';
-                }
-                filtersSection.style.display = 'block'; // Show filters for other categories
             }
 
-            // Get selected category
-            const genre = elements.genreFilter.value.toLowerCase();
-            const country = elements.countryFilter.value.toLowerCase();
-            const year = elements.yearFilter.value;
-            const sortBy = elements.sortFilter.value;
-
-            // Filter content
-            cineData.Categories.forEach(cat => {
-                if (category === 'all' || cat.MainCategory.toLowerCase().includes(category)) {
-                    cat.Entries.forEach(entry => {
-                        // Check genre and country filters
-                        const genreMatch = genre === 'all' ||
-                            (entry.SubCategory && entry.SubCategory.toLowerCase().includes(genre));
-                        const countryMatch = country === 'all' ||
-                            (entry.Country && entry.Country.toLowerCase().includes(country));
-                        const yearMatch = year === 'all' || (entry.Year && entry.Year.toString() === year);
-
-                        if (genreMatch && countryMatch && yearMatch && isContentAllowed(entry)) {
-                            currentContent.push({
-                                ...entry,
-                                type: cat.MainCategory.toLowerCase().includes('movie') ? 'movie' :
-                                    cat.MainCategory.toLowerCase().includes('series') ? 'series' : 'live'
-                            });
-                        }
-                    });
-                }
-            });
-
-            // Shuffle content on initial load
-            if (isInitialLoad) {
-                currentContent = shuffleArray(currentContent);
-                isInitialLoad = false;
-            }
-            // Apply sorting if not initial load
-            else {
-                currentContent = sortContent(currentContent, sortBy);
-            }
-
-            // Calculate total pages
-            totalPages = Math.ceil(currentContent.length / ITEMS_PER_PAGE);
-
-            // Cache filtered content
-            cachedContent = [...currentContent];
-
-            // Render content
-            renderCurrentView();
-            renderPaginationControls();
-
-            // Re-initialize lazy loading for the new content
-            setupLazyLoading();
+            filtersSection.style.display = 'block';
+            await fetchData({ page: 1, append: false });
         }
 
-        // Render the current view (grid or list)
-        function renderCurrentView() {
-            elements.contentGrid.style.display = 'none';
-            elements.contentList.style.display = 'none';
-            elements.watchLaterGrid.style.display = 'none';
+        function renderPageContent(itemsToRender) {
+            let container, viewClass;
+            const isWatchLater = document.querySelector('.nav-item.active')?.dataset.category === 'watch-later';
 
-            let container;
-            let viewClass = 'grid';
-
-            if (currentView === 'watch-later') {
+            if (isWatchLater) {
                 container = elements.watchLaterGrid;
+                viewClass = 'grid';
+                elements.contentGrid.style.display = 'none';
+                elements.contentList.style.display = 'none';
                 container.style.display = 'grid';
+                if (currentPage === 1) container.innerHTML = '';
             } else if (currentView === 'grid') {
                 container = elements.contentGrid;
-                container.style.display = 'grid';
-            } else { // list
+                viewClass = 'grid';
+                elements.contentGrid.style.display = 'grid';
+                elements.contentList.style.display = 'none';
+                elements.watchLaterGrid.style.display = 'none';
+            } else {
                 container = elements.contentList;
-                container.style.display = 'flex';
                 viewClass = 'list';
+                elements.contentGrid.style.display = 'none';
+                elements.contentList.style.display = 'flex';
+                elements.watchLaterGrid.style.display = 'none';
             }
-
-            container.innerHTML = '';
-
-            const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-            const endIndex = startIndex + ITEMS_PER_PAGE;
-            const itemsToRender = currentContent.slice(startIndex, endIndex);
 
             itemsToRender.forEach(item => {
                 const card = createContentCard(item, viewClass);
                 container.appendChild(card);
             });
-
-            setupLazyLoading();
         }
         
         // Create a content card
@@ -7180,12 +6851,6 @@ async function switchToServer(server, allServers) {
             });
 
             elements.genreFilter.addEventListener('change', () => {
-                const activeNavItem = document.querySelector('.nav-item.active');
-                const category = activeNavItem ? activeNavItem.dataset.category : 'all';
-                renderContent(category);
-            });
-
-            elements.countryFilter.addEventListener('change', () => {
                 const activeNavItem = document.querySelector('.nav-item.active');
                 const category = activeNavItem ? activeNavItem.dataset.category : 'all';
                 renderContent(category);
