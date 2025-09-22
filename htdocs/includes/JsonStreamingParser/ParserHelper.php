@@ -18,8 +18,7 @@ abstract class ParserHelper
     }
 
     /**
-     * @see http://stackoverflow.com/questions/1805802/php-convert-unicode-codep
-oint-to-utf-8
+     * @see http://stackoverflow.com/questions/1805802/php-convert-unicode-codepoint-to-utf-8
      */
     public static function convertCodepointToCharacter(int $char): string
     {
