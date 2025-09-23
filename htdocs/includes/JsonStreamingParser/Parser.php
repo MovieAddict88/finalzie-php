@@ -154,8 +154,6 @@ class Parser
             }
 
             $ended = (bool) (ftell($this->stream) - \strlen($line) - $pos);
-            // if we're still at the same place after stream_get_line, we're don
-e
             $eof = ftell($this->stream) === $pos;
 
             $byteLen = \strlen($line);
