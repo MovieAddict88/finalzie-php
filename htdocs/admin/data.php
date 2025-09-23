@@ -1,6 +1,7 @@
 <?php
 require_once 'partials/header.php';
 require_once '../includes/config.php';
+require_once '../includes/lib/json-machine/autoloader_custom.php';
 require_once '../includes/import_logic.php';
 require_once '../includes/content_manager.php'; // Include the content manager
 
@@ -31,16 +32,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['json_file'])) {
         $feedback = 'Error uploading file. Code: ' . $file['error'];
         $feedback_type = 'error';
     } else {
-        $json_content = file_get_contents($file['tmp_name']);
-        $data = json_decode($json_content, true);
+        // Check file size to determine which import method to use
+        $file_size_mb = $file['size'] / 1024 / 1024;
 
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            $feedback = 'Error parsing JSON: ' . json_last_error_msg();
-            $feedback_type = 'error';
-        } else {
-            $import_result = importJsonData($data, $conn);
+        if ($file_size_mb > 10) {
+            // Use streaming for large files
+            $import_result = importJsonDataStream($file['tmp_name'], $conn);
             $feedback = $import_result['message'];
             $feedback_type = $import_result['status'];
+        } else {
+            // Use traditional method for smaller files
+            $json_content = file_get_contents($file['tmp_name']);
+            $data = json_decode($json_content, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $feedback = 'Error parsing JSON: ' . json_last_error_msg();
+                $feedback_type = 'error';
+            } else {
+                $import_result = importJsonData($data, $conn);
+                $feedback = $import_result['message'];
+                $feedback_type = $import_result['status'];
+            }
         }
     }
 }
