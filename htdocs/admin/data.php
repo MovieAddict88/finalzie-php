@@ -1,9 +1,9 @@
 <?php
 require_once 'partials/header.php';
 require_once '../includes/config.php';
+require_once '../includes/lib/json-machine/autoloader_custom.php';
 require_once '../includes/import_logic.php';
 require_once '../includes/content_manager.php'; // Include the content manager
-require_once '../includes/lib/json-machine/src/autoloader.php';
 
 $conn = db_connect();
 $feedback = '';
